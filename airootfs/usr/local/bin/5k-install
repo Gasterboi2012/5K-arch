@@ -26,6 +26,7 @@ ROOT_PASS=""
 TIMEZONE="UTC"
 LOCALE="en_US.UTF-8"
 KEYMAP="us"
+INSTALL_NVIDIA=0       # 0 = no, 1 = install nvidia-open drivers
 
 DLG=(dialog --backtitle "$TITLE" --no-collapse)
 
@@ -216,6 +217,18 @@ ask_keymap() {
     [[ -z "$KEYMAP" ]] && KEYMAP="us"
 }
 
+ask_gpu() {
+    # Optional NVIDIA open-kernel-module drivers.
+    if "${DLG[@]}" --title "Graphics drivers" --defaultno \
+        --yes-label "Install NVIDIA" --no-label "Skip" \
+        --yesno "\nInstall the NVIDIA open-kernel-module drivers (nvidia-open-dkms)?\n\n  - Recommended for NVIDIA Turing/Ampere/Ada GPUs\n    (RTX 20-series and newer, GTX 16-series).\n  - Pulls in nvidia-utils, nvidia-settings and\n    linux-headers, and enables early KMS for Wayland.\n\nChoose Skip for AMD / Intel graphics, or for older\nNVIDIA cards not supported by the open modules." 16 70; then
+        INSTALL_NVIDIA=1
+    else
+        INSTALL_NVIDIA=0
+    fi
+    log "Install NVIDIA: $INSTALL_NVIDIA"
+}
+
 #-----------------------------------------------------------------------------
 # Installation
 #-----------------------------------------------------------------------------
@@ -229,6 +242,15 @@ PKGS_BASE=(
     xdg-user-dirs
     ttf-jetbrains-mono-nerd noto-fonts noto-fonts-emoji
     amd-ucode intel-ucode
+)
+
+# NVIDIA open-kernel-module drivers (installed only if the user opts in).
+# DKMS variant + linux-headers so the modules rebuild against kernel updates.
+PKGS_NVIDIA=(
+    nvidia-open-dkms
+    nvidia-utils
+    nvidia-settings
+    linux-headers
 )
 
 # Minimal KDE Plasma.
@@ -256,6 +278,7 @@ install_base() {
     run_step "Initializing pacman keyring" bash -c "pacman-key --init && pacman-key --populate archlinux"
 
     local all=("${PKGS_BASE[@]}" "${PKGS_KDE[@]}")
+    (( INSTALL_NVIDIA )) && all+=("${PKGS_NVIDIA[@]}")
     # microcode is only meaningful on bare metal; harmless otherwise.
     "${DLG[@]}" --title "Installing" --infobox "\nInstalling the 5K base system and KDE Plasma.\n\nThis can take a while depending on your connection..." 9 64
     run_step "pacstrap base + KDE" pacstrap -K /mnt "${all[@]}"
@@ -287,6 +310,9 @@ configure_system() {
     chroot_run "echo '${HOSTNAME}' > /etc/hostname"
     chroot_run "printf '127.0.0.1\tlocalhost\n::1\t\tlocalhost\n127.0.1.1\t%s.localdomain %s\n' '${HOSTNAME}' '${HOSTNAME}' > /etc/hosts"
 
+    # NVIDIA: configure early KMS before the initramfs is built.
+    (( INSTALL_NVIDIA )) && configure_nvidia
+
     # Initramfs
     chroot_run "mkinitcpio -P"
 
@@ -307,6 +333,32 @@ configure_system() {
     deploy_fastfetch
     deploy_fonts
     install_bootloader
+}
+
+configure_nvidia() {
+    # Early-load the NVIDIA modules in the initramfs and enable DRM modeset so
+    # KDE Plasma / Wayland and SDDM start on the GPU cleanly.
+    chroot_run "sed -i 's/^MODULES=.*/MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)/' /etc/mkinitcpio.conf"
+    chroot_run "install -d /etc/modprobe.d && printf 'options nvidia_drm modeset=1 fbdev=1\n' > /etc/modprobe.d/nvidia.conf"
+    # Pacman hook so the initramfs is regenerated whenever the nvidia packages
+    # or the kernel are updated.
+    chroot_run "install -d /etc/pacman.d/hooks"
+    cat >/mnt/etc/pacman.d/hooks/nvidia.hook <<'HOOK' 2>>"$LOG" || true
+[Trigger]
+Operation=Install
+Operation=Upgrade
+Operation=Remove
+Type=Package
+Target=nvidia-open-dkms
+Target=linux
+
+[Action]
+Description=Updating NVIDIA module in initcpio
+Depends=mkinitcpio
+When=PostTransaction
+NeedsTargets
+Exec=/bin/sh -c 'while read -r trg; do case $trg in linux) exit 0; esac; done; /usr/bin/mkinitcpio -P'
+HOOK
 }
 
 deploy_fastfetch() {
@@ -426,8 +478,10 @@ main() {
     ask_root_pass
     ask_timezone
     ask_keymap
+    ask_gpu
 
-    confirm "Ready to install" "Summary:\n\n  Disk:      $TARGET_DISK (will be erased)\n  Boot:      ${BOOT_MODE^^}\n  Hostname:  $HOSTNAME\n  User:      $USERNAME\n  Timezone:  $TIMEZONE\n  Locale:    $LOCALE\n  Keymap:    $KEYMAP\n\nProceed with installation?" 18 70 \
+    local nvidia_summary="no"; (( INSTALL_NVIDIA )) && nvidia_summary="yes (nvidia-open-dkms)"
+    confirm "Ready to install" "Summary:\n\n  Disk:      $TARGET_DISK (will be erased)\n  Boot:      ${BOOT_MODE^^}\n  Hostname:  $HOSTNAME\n  User:      $USERNAME\n  Timezone:  $TIMEZONE\n  Locale:    $LOCALE\n  Keymap:    $KEYMAP\n  NVIDIA:    $nvidia_summary\n\nProceed with installation?" 19 70 \
         || { clear; exit 0; }
 
     partition_disk
