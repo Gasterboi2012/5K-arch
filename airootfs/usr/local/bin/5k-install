@@ -122,6 +122,10 @@ select_disk() {
 }
 
 partition_disk() {
+    # Release any mounts/swap left over (e.g. from a previous failed run) so the
+    # target disk is not busy when we re-partition and format it.
+    run_step "Releasing existing mounts" bash -c "swapoff -a 2>/dev/null; umount -R /mnt 2>/dev/null; true"
+
     run_step "Wiping disk signatures" wipefs -af "$TARGET_DISK"
     run_step "Zapping partition table" sgdisk -Z "$TARGET_DISK"
 
@@ -136,6 +140,7 @@ partition_disk() {
             "$TARGET_DISK"
         EFI_PART="${TARGET_DISK}${p}1"
         ROOT_PART="${TARGET_DISK}${p}2"
+        run_step "Re-reading partition table" bash -c "partprobe '$TARGET_DISK' 2>/dev/null; udevadm settle 2>/dev/null; true"
         run_step "Formatting EFI partition"  mkfs.fat -F32 -n 5K_EFI "$EFI_PART"
     else
         run_step "Creating GPT partitions (BIOS)" sgdisk \
@@ -145,6 +150,7 @@ partition_disk() {
         ROOT_PART="${TARGET_DISK}${p}2"
     fi
 
+    run_step "Settling devices" bash -c "partprobe '$TARGET_DISK' 2>/dev/null; udevadm settle 2>/dev/null; true"
     run_step "Formatting root partition" mkfs.ext4 -F -L 5K_ROOT "$ROOT_PART"
 
     run_step "Mounting root partition" mount "$ROOT_PART" /mnt
