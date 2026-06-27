@@ -440,23 +440,19 @@ DefaultProfile=5K.profile
 KC
 
     # Custom 5K wallpaper: ship the package and make it the default desktop
-    # background for the new user via /etc/skel.
+    # background. Plasma regenerates the desktop containment on first login and
+    # reads the default wallpaper from the active Global Theme's "defaults" file
+    # ([Wallpaper] Image=), so we set Image=5K there rather than seeding an
+    # appletsrc (which Plasma overwrites with fresh activity IDs).
     if [[ -d /usr/share/wallpapers/5K ]]; then
         install -d /mnt/usr/share/wallpapers
         cp -r /usr/share/wallpapers/5K /mnt/usr/share/wallpapers/ 2>>"$LOG" || true
-        cat >/mnt/etc/skel/.config/plasma-org.kde.plasma.desktop-appletsrc <<'PLASMA'
-[Containments][1]
-ActivityId=
-formfactor=0
-immutability=1
-lastScreen=0
-location=0
-plugin=org.kde.plasma.folder
-wallpaperplugin=org.kde.image
-
-[Containments][1][Wallpaper][org.kde.image][General]
-Image=/usr/share/wallpapers/5K/
-PLASMA
+        for lnf in org.kde.breeze.desktop org.kde.breezedark.desktop org.kde.breezetwilight.desktop; do
+            df="/mnt/usr/share/plasma/look-and-feel/${lnf}/contents/defaults"
+            if [[ -f "$df" ]]; then
+                sed -i 's/^Image=Next$/Image=5K/' "$df" 2>>"$LOG" || true
+            fi
+        done
     fi
 
     # Copy skel assets to the already-created user home.
