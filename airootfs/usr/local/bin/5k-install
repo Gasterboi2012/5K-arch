@@ -1,0 +1,429 @@
+#!/usr/bin/env bash
+#
+# 5k-install - TUI installer for 5K Linux.
+#
+# Installs a minimal KDE Plasma desktop with the JetBrainsMono Nerd Font enabled
+# by default, plus the custom 5K fastfetch configuration.
+#
+set -uo pipefail
+
+#-----------------------------------------------------------------------------
+# Globals
+#-----------------------------------------------------------------------------
+TITLE="5K Linux Installer"
+LOG="/tmp/5k-install.log"
+: >"$LOG"
+
+# Selected values, filled in by the wizard.
+TARGET_DISK=""
+BOOT_MODE="bios"          # bios | uefi
+EFI_PART=""
+ROOT_PART=""
+HOSTNAME="5k"
+USERNAME=""
+USER_PASS=""
+ROOT_PASS=""
+TIMEZONE="UTC"
+LOCALE="en_US.UTF-8"
+KEYMAP="us"
+
+DLG=(dialog --backtitle "$TITLE" --no-collapse)
+
+#-----------------------------------------------------------------------------
+# Helpers
+#-----------------------------------------------------------------------------
+log()  { echo "[5k-install] $*" >>"$LOG"; }
+
+die() {
+    "${DLG[@]}" --title "Error" --msgbox "\n$1\n\nSee $LOG for details." 12 70 2>/dev/null
+    clear
+    echo "Installation aborted: $1" >&2
+    echo "Log: $LOG" >&2
+    exit 1
+}
+
+# Run a command, streaming its output into a dialog progress box and the log.
+run_step() {
+    local msg="$1"; shift
+    log "STEP: $msg :: $*"
+    {
+        echo "### $msg"
+        "$@"
+    } >>"$LOG" 2>&1
+    local rc=$?
+    if (( rc != 0 )); then
+        die "Step failed: $msg (exit $rc)"
+    fi
+}
+
+confirm() {
+    "${DLG[@]}" --title "$1" --yesno "$2" "${3:-10}" "${4:-70}"
+}
+
+#-----------------------------------------------------------------------------
+# Pre-flight
+#-----------------------------------------------------------------------------
+preflight() {
+    if [[ $EUID -ne 0 ]]; then
+        die "The installer must run as root."
+    fi
+    command -v dialog  >/dev/null || { echo "dialog is required" >&2; exit 1; }
+    command -v pacstrap >/dev/null || die "arch-install-scripts is missing from the live environment."
+
+    if [[ -d /sys/firmware/efi/efivars ]]; then
+        BOOT_MODE="uefi"
+    else
+        BOOT_MODE="bios"
+    fi
+    log "Detected boot mode: $BOOT_MODE"
+}
+
+welcome_screen() {
+    "${DLG[@]}" --title "Welcome to 5K Linux" --yes-label "Install" --no-label "Quit" \
+        --yesno "\nThis will install 5K Linux:\n\n  - Minimal KDE Plasma desktop\n  - JetBrainsMono Nerd Font (default)\n  - Custom 5K fastfetch\n  - SDDM display manager + NetworkManager\n\nBoot mode detected: ${BOOT_MODE^^}\n\nWARNING: the target disk will be ERASED.\n\nContinue?" 18 70 \
+        || { clear; exit 0; }
+}
+
+#-----------------------------------------------------------------------------
+# Network
+#-----------------------------------------------------------------------------
+check_network() {
+    if ping -c1 -W2 archlinux.org >/dev/null 2>&1; then
+        return 0
+    fi
+    if confirm "Network" "No internet connection detected.\n\nAn internet connection is required to install packages.\n\nOpen the network configuration tool (nmtui) now?" 12 70; then
+        nmtui || true
+    fi
+    if ! ping -c1 -W2 archlinux.org >/dev/null 2>&1; then
+        if ! confirm "Network" "Still no connectivity detected.\n\nContinue anyway?" 9 60; then
+            die "No network connection."
+        fi
+    fi
+}
+
+#-----------------------------------------------------------------------------
+# Disk selection & partitioning
+#-----------------------------------------------------------------------------
+select_disk() {
+    local entries=() name size model
+    while read -r name size model; do
+        entries+=("/dev/$name" "$size ${model:-disk}")
+    done < <(lsblk -dno NAME,SIZE,MODEL -e7,11 2>/dev/null)
+
+    [[ ${#entries[@]} -eq 0 ]] && die "No disks found."
+
+    TARGET_DISK=$("${DLG[@]}" --title "Select target disk" \
+        --menu "Choose the disk to install 5K Linux on.\nALL DATA ON IT WILL BE ERASED." 18 70 8 \
+        "${entries[@]}" 3>&1 1>&2 2>&3) || { clear; exit 0; }
+    log "Target disk: $TARGET_DISK"
+
+    confirm "Confirm erase" "Erase ALL data on $TARGET_DISK and install 5K Linux?" 8 60 \
+        || { clear; exit 0; }
+}
+
+partition_disk() {
+    run_step "Wiping disk signatures" wipefs -af "$TARGET_DISK"
+    run_step "Zapping partition table" sgdisk -Z "$TARGET_DISK"
+
+    # Determine partition name prefix (nvme0n1p1 vs sda1).
+    local p=""
+    [[ "$TARGET_DISK" =~ (nvme|mmcblk|loop) ]] && p="p"
+
+    if [[ "$BOOT_MODE" == "uefi" ]]; then
+        run_step "Creating GPT partitions (UEFI)" sgdisk \
+            -n1:0:+512M -t1:ef00 -c1:"5K_EFI" \
+            -n2:0:0     -t2:8300 -c2:"5K_ROOT" \
+            "$TARGET_DISK"
+        EFI_PART="${TARGET_DISK}${p}1"
+        ROOT_PART="${TARGET_DISK}${p}2"
+        run_step "Formatting EFI partition"  mkfs.fat -F32 -n 5K_EFI "$EFI_PART"
+    else
+        run_step "Creating GPT partitions (BIOS)" sgdisk \
+            -n1:0:+1M   -t1:ef02 -c1:"BIOS_BOOT" \
+            -n2:0:0     -t2:8300 -c2:"5K_ROOT" \
+            "$TARGET_DISK"
+        ROOT_PART="${TARGET_DISK}${p}2"
+    fi
+
+    run_step "Formatting root partition" mkfs.ext4 -F -L 5K_ROOT "$ROOT_PART"
+
+    run_step "Mounting root partition" mount "$ROOT_PART" /mnt
+    if [[ "$BOOT_MODE" == "uefi" ]]; then
+        mkdir -p /mnt/boot
+        run_step "Mounting EFI partition" mount "$EFI_PART" /mnt/boot
+    fi
+}
+
+#-----------------------------------------------------------------------------
+# User configuration dialogs
+#-----------------------------------------------------------------------------
+ask_hostname() {
+    HOSTNAME=$("${DLG[@]}" --title "Hostname" --inputbox "Enter a hostname:" 8 60 "5k" 3>&1 1>&2 2>&3) || exit 0
+    [[ -z "$HOSTNAME" ]] && HOSTNAME="5k"
+}
+
+ask_user() {
+    while true; do
+        USERNAME=$("${DLG[@]}" --title "User account" --inputbox "Enter a username (lowercase):" 8 60 "" 3>&1 1>&2 2>&3) || exit 0
+        [[ "$USERNAME" =~ ^[a-z_][a-z0-9_-]*$ ]] && break
+        "${DLG[@]}" --msgbox "Invalid username. Use lowercase letters, digits, '-' and '_'." 8 60
+    done
+
+    while true; do
+        local p1 p2
+        p1=$("${DLG[@]}" --title "User password" --insecure --passwordbox "Password for $USERNAME:" 8 60 3>&1 1>&2 2>&3) || exit 0
+        p2=$("${DLG[@]}" --title "User password" --insecure --passwordbox "Confirm password:" 8 60 3>&1 1>&2 2>&3) || exit 0
+        if [[ -z "$p1" ]]; then
+            "${DLG[@]}" --msgbox "Password cannot be empty." 7 50; continue
+        fi
+        [[ "$p1" == "$p2" ]] && { USER_PASS="$p1"; break; }
+        "${DLG[@]}" --msgbox "Passwords do not match. Try again." 7 50
+    done
+}
+
+ask_root_pass() {
+    while true; do
+        local p1 p2
+        p1=$("${DLG[@]}" --title "Root password" --insecure --passwordbox "Password for root:" 8 60 3>&1 1>&2 2>&3) || exit 0
+        p2=$("${DLG[@]}" --title "Root password" --insecure --passwordbox "Confirm root password:" 8 60 3>&1 1>&2 2>&3) || exit 0
+        if [[ -z "$p1" ]]; then
+            "${DLG[@]}" --msgbox "Password cannot be empty." 7 50; continue
+        fi
+        [[ "$p1" == "$p2" ]] && { ROOT_PASS="$p1"; break; }
+        "${DLG[@]}" --msgbox "Passwords do not match. Try again." 7 50
+    done
+}
+
+ask_timezone() {
+    local tz
+    tz=$("${DLG[@]}" --title "Timezone" --inputbox "Enter timezone (e.g. America/New_York, Europe/London):" 9 70 "UTC" 3>&1 1>&2 2>&3) || exit 0
+    if [[ -n "$tz" && -f "/usr/share/zoneinfo/$tz" ]]; then
+        TIMEZONE="$tz"
+    else
+        TIMEZONE="UTC"
+        "${DLG[@]}" --msgbox "Timezone not recognised; defaulting to UTC." 7 60
+    fi
+}
+
+ask_keymap() {
+    KEYMAP=$("${DLG[@]}" --title "Keyboard layout" --inputbox "Console keymap:" 8 60 "us" 3>&1 1>&2 2>&3) || exit 0
+    [[ -z "$KEYMAP" ]] && KEYMAP="us"
+}
+
+#-----------------------------------------------------------------------------
+# Installation
+#-----------------------------------------------------------------------------
+PKGS_BASE=(
+    base base-devel linux linux-firmware
+    mkinitcpio sudo
+    networkmanager
+    grub efibootmgr os-prober
+    fastfetch git nano vim
+    pipewire pipewire-pulse pipewire-alsa wireplumber
+    xdg-user-dirs
+    ttf-jetbrains-mono-nerd-font noto-fonts noto-fonts-emoji
+    amd-ucode intel-ucode
+)
+
+# Minimal KDE Plasma.
+PKGS_KDE=(
+    plasma-desktop
+    sddm
+    plasma-nm
+    plasma-pa
+    powerdevil
+    kscreen
+    konsole
+    dolphin
+    kate
+    ark
+    kde-gtk-config
+    breeze-gtk
+)
+
+install_base() {
+    run_step "Ranking mirrors" bash -c "reflector --latest 20 --sort rate --protocol https --save /etc/pacman.d/mirrorlist 2>/dev/null || true"
+
+    local all=("${PKGS_BASE[@]}" "${PKGS_KDE[@]}")
+    # microcode is only meaningful on bare metal; harmless otherwise.
+    "${DLG[@]}" --title "Installing" --infobox "\nInstalling the 5K base system and KDE Plasma.\n\nThis can take a while depending on your connection..." 9 64
+    run_step "pacstrap base + KDE" pacstrap -K /mnt "${all[@]}"
+}
+
+gen_fstab() {
+    run_step "Generating fstab" bash -c "genfstab -U /mnt >> /mnt/etc/fstab"
+}
+
+# Run a command inside the freshly installed system.
+chroot_run() {
+    arch-chroot /mnt /bin/bash -c "$1" >>"$LOG" 2>&1 || die "chroot step failed: $1"
+}
+
+configure_system() {
+    "${DLG[@]}" --title "Configuring" --infobox "\nConfiguring 5K Linux..." 7 50
+
+    run_step "Timezone"  arch-chroot /mnt ln -sf "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime
+    chroot_run "hwclock --systohc"
+
+    # Locale
+    chroot_run "sed -i 's/^#${LOCALE} UTF-8/${LOCALE} UTF-8/' /etc/locale.gen"
+    chroot_run "echo '${LOCALE} UTF-8' >> /etc/locale.gen"
+    chroot_run "locale-gen"
+    chroot_run "echo 'LANG=${LOCALE}' > /etc/locale.conf"
+    chroot_run "echo 'KEYMAP=${KEYMAP}' > /etc/vconsole.conf"
+
+    # Hostname + hosts
+    chroot_run "echo '${HOSTNAME}' > /etc/hostname"
+    chroot_run "printf '127.0.0.1\tlocalhost\n::1\t\tlocalhost\n127.0.1.1\t%s.localdomain %s\n' '${HOSTNAME}' '${HOSTNAME}' > /etc/hosts"
+
+    # Initramfs
+    chroot_run "mkinitcpio -P"
+
+    # Root password
+    echo "root:${ROOT_PASS}" | arch-chroot /mnt chpasswd || die "Failed to set root password"
+
+    # User
+    chroot_run "useradd -m -G wheel,audio,video,storage,network -s /bin/bash '${USERNAME}'"
+    echo "${USERNAME}:${USER_PASS}" | arch-chroot /mnt chpasswd || die "Failed to set user password"
+
+    # Sudo for wheel
+    chroot_run "sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers"
+
+    # Enable services
+    chroot_run "systemctl enable NetworkManager"
+    chroot_run "systemctl enable sddm"
+
+    deploy_fastfetch
+    deploy_fonts
+    install_bootloader
+}
+
+deploy_fastfetch() {
+    # Copy the 5K fastfetch assets onto the target and make them the default for
+    # the new user (and root) via /etc/skel.
+    mkdir -p /mnt/usr/share/5k
+    cp /usr/share/5k/fastfetch.jsonc /mnt/usr/share/5k/fastfetch.jsonc 2>>"$LOG" || true
+    cp /usr/share/5k/logo.txt        /mnt/usr/share/5k/logo.txt        2>>"$LOG" || true
+
+    cp /usr/local/bin/5k-fastfetch /mnt/usr/local/bin/5k-fastfetch 2>>"$LOG" || true
+    chmod 755 /mnt/usr/local/bin/5k-fastfetch 2>>"$LOG" || true
+
+    install -d /mnt/etc/skel/.config/fastfetch
+    cp /usr/share/5k/fastfetch.jsonc /mnt/etc/skel/.config/fastfetch/config.jsonc
+
+    # Run fastfetch on interactive login for the installed user.
+    cat >>"/mnt/home/${USERNAME}/.bashrc" <<'BRC' 2>>"$LOG" || true
+# 5K greeting
+if [[ -z "$FIVEK_FASTFETCH_SHOWN" && -t 1 ]]; then
+    export FIVEK_FASTFETCH_SHOWN=1
+    command -v 5k-fastfetch >/dev/null 2>&1 && 5k-fastfetch
+fi
+BRC
+    install -d "/mnt/home/${USERNAME}/.config/fastfetch"
+    cp /usr/share/5k/fastfetch.jsonc "/mnt/home/${USERNAME}/.config/fastfetch/config.jsonc" 2>>"$LOG" || true
+    arch-chroot /mnt chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}/.config" "/home/${USERNAME}/.bashrc" >>"$LOG" 2>&1 || true
+}
+
+deploy_fonts() {
+    # Make JetBrainsMono Nerd Font the default monospace (and a sensible default
+    # everywhere) via fontconfig, plus KDE + Konsole defaults.
+    install -d /mnt/etc/fonts/conf.d
+    cat >/mnt/etc/fonts/local.conf <<'FC'
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <!-- 5K: prefer JetBrainsMono Nerd Font for monospace by default. -->
+  <alias>
+    <family>monospace</family>
+    <prefer><family>JetBrainsMono Nerd Font</family></prefer>
+  </alias>
+  <match target="pattern">
+    <test name="family"><string>monospace</string></test>
+    <edit name="family" mode="prepend" binding="strong">
+      <string>JetBrainsMono Nerd Font</string>
+    </edit>
+  </match>
+</fontconfig>
+FC
+
+    # KDE global font defaults.
+    install -d /mnt/etc/skel/.config
+    cat >/mnt/etc/skel/.config/kdeglobals <<'KDE'
+[General]
+fixed=JetBrainsMono Nerd Font,11,-1,5,50,0,0,0,0,0
+font=Noto Sans,10,-1,5,50,0,0,0,0,0
+menuFont=Noto Sans,10,-1,5,50,0,0,0,0,0
+smallestReadableFont=Noto Sans,8,-1,5,50,0,0,0,0,0
+toolBarFont=Noto Sans,10,-1,5,50,0,0,0,0,0
+
+[WM]
+activeFont=Noto Sans,10,-1,5,50,0,0,0,0,0
+KDE
+
+    # Konsole default profile using the Nerd Font.
+    install -d /mnt/etc/skel/.local/share/konsole
+    cat >/mnt/etc/skel/.local/share/konsole/5K.profile <<'KP'
+[Appearance]
+ColorScheme=Breeze
+Font=JetBrainsMono Nerd Font,12,-1,5,50,0,0,0,0,0
+
+[General]
+Name=5K
+Parent=FALLBACK/
+KP
+    cat >/mnt/etc/skel/.config/konsolerc <<'KC'
+[Desktop Entry]
+DefaultProfile=5K.profile
+KC
+
+    # Copy skel assets to the already-created user home.
+    arch-chroot /mnt /bin/bash -c "cp -rn /etc/skel/.config /etc/skel/.local /home/${USERNAME}/ 2>/dev/null; chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}" >>"$LOG" 2>&1 || true
+}
+
+install_bootloader() {
+    if [[ "$BOOT_MODE" == "uefi" ]]; then
+        run_step "Installing GRUB (UEFI)" arch-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=5K --recheck
+    else
+        run_step "Installing GRUB (BIOS)" arch-chroot /mnt grub-install --target=i386-pc --recheck "$TARGET_DISK"
+    fi
+    # Brand the boot menu.
+    chroot_run "sed -i 's/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR=\"5K Linux\"/' /etc/default/grub"
+    run_step "Generating GRUB config" arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
+}
+
+finish() {
+    run_step "Unmounting" bash -c "umount -R /mnt || true"
+    if confirm "Done" "5K Linux has been installed successfully!\n\nReboot now?\n\n(Remove the installation media after powering off.)" 11 64; then
+        clear
+        systemctl reboot
+    else
+        clear
+        echo "Installation complete. Run 'reboot' when ready."
+    fi
+}
+
+#-----------------------------------------------------------------------------
+# Main
+#-----------------------------------------------------------------------------
+main() {
+    preflight
+    welcome_screen
+    check_network
+    select_disk
+    ask_hostname
+    ask_user
+    ask_root_pass
+    ask_timezone
+    ask_keymap
+
+    confirm "Ready to install" "Summary:\n\n  Disk:      $TARGET_DISK (will be erased)\n  Boot:      ${BOOT_MODE^^}\n  Hostname:  $HOSTNAME\n  User:      $USERNAME\n  Timezone:  $TIMEZONE\n  Locale:    $LOCALE\n  Keymap:    $KEYMAP\n\nProceed with installation?" 18 70 \
+        || { clear; exit 0; }
+
+    partition_disk
+    install_base
+    gen_fstab
+    configure_system
+    finish
+}
+
+main "$@"

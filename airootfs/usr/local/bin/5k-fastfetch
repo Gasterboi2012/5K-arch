@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Run fastfetch with the 5K configuration. Prefers a user-local config if present,
+# otherwise falls back to the system-wide 5K config.
+user_cfg="${HOME}/.config/fastfetch/config.jsonc"
+if [[ -r "$user_cfg" ]]; then
+    exec fastfetch --config "$user_cfg" "$@"
+else
+    exec fastfetch --config /usr/share/5k/fastfetch.jsonc "$@"
+fi

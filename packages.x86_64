@@ -1,0 +1,58 @@
+# Packages installed into the 5K live/installer ISO.
+# This is the live environment only; the TUI installer (/usr/local/bin/5k-install)
+# pacstraps the real package set onto the target disk.
+
+# Base live system
+base
+linux
+linux-firmware
+mkinitcpio
+mkinitcpio-archiso
+
+# Bootloader tooling (needed live and to install onto target)
+syslinux
+edk2-shell
+efibootmgr
+grub
+memtest86+
+memtest86+-efi
+
+# Filesystem / disk tooling used by the installer
+arch-install-scripts
+gptfdisk
+parted
+dosfstools
+e2fsprogs
+btrfs-progs
+exfatprogs
+ntfs-3g
+
+# Networking in the live environment
+networkmanager
+iwd
+wpa_supplicant
+dhcpcd
+openssh
+
+# Installer TUI + helpers
+dialog
+git
+wget
+curl
+rsync
+sudo
+which
+less
+nano
+vim
+fastfetch
+
+# Hardware microcode (copied to target by the installer)
+amd-ucode
+intel-ucode
+
+# Misc live conveniences
+pacman-contrib
+reflector
+terminus-font
+zsh

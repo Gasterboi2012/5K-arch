@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Welcome screen shown on the 5K live ISO. Displays the custom fastfetch logo and
+# offers to launch the TUI installer.
+set -uo pipefail
+
+clear
+5k-fastfetch 2>/dev/null || true
+
+cat <<'EOF'
+
+  Welcome to the 5K Linux live environment.
+
+  The 5K installer sets up a minimal KDE Plasma desktop with the
+  JetBrainsMono Nerd Font enabled by default.
+
+EOF
+
+while true; do
+    read -rp "  Start the 5K installer now? [Y/n/shell] " ans
+    case "${ans,,}" in
+        ""|y|yes)
+            exec 5k-install
+            ;;
+        n|no)
+            echo "  Dropping to a shell. Run '5k-install' any time to start the installer."
+            exec bash
+            ;;
+        s|shell)
+            echo "  Dropping to a shell. Run '5k-install' any time to start the installer."
+            exec bash
+            ;;
+        *)
+            echo "  Please answer y, n, or shell."
+            ;;
+    esac
+done

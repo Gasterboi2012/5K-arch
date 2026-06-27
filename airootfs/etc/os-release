@@ -1,0 +1,11 @@
+NAME="5K Linux"
+PRETTY_NAME="5K Linux"
+ID=5k
+ID_LIKE=arch
+BUILD_ID=rolling
+ANSI_COLOR="38;2;23;147;209"
+HOME_URL="https://github.com/Gasterboi2012/5K-arch"
+DOCUMENTATION_URL="https://github.com/Gasterboi2012/5K-arch"
+SUPPORT_URL="https://github.com/Gasterboi2012/5K-arch/issues"
+BUG_REPORT_URL="https://github.com/Gasterboi2012/5K-arch/issues"
+LOGO=5k
