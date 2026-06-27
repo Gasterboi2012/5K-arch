@@ -81,7 +81,7 @@ preflight() {
 
 welcome_screen() {
     "${DLG[@]}" --title "Welcome to 5K Linux" --yes-label "Install" --no-label "Quit" \
-        --yesno "\nThis will install 5K Linux:\n\n  - Minimal KDE Plasma desktop\n  - JetBrainsMono Nerd Font (default)\n  - Custom 5K fastfetch\n  - SDDM display manager + NetworkManager\n\nBoot mode detected: ${BOOT_MODE^^}\n\nWARNING: the target disk will be ERASED.\n\nContinue?" 18 70 \
+        --yesno "\nThis will install 5K Linux:\n\n  - Minimal KDE Plasma desktop\n  - JetBrainsMono Nerd Font (default)\n  - Custom 5K fastfetch + wallpaper\n  - SDDM display manager + NetworkManager\n\nBoot mode detected: ${BOOT_MODE^^}\n\nWARNING: the target disk will be ERASED.\n\nContinue?" 18 70 \
         || { clear; exit 0; }
 }
 
@@ -438,6 +438,26 @@ KP
 [Desktop Entry]
 DefaultProfile=5K.profile
 KC
+
+    # Custom 5K wallpaper: ship the package and make it the default desktop
+    # background for the new user via /etc/skel.
+    if [[ -d /usr/share/wallpapers/5K ]]; then
+        install -d /mnt/usr/share/wallpapers
+        cp -r /usr/share/wallpapers/5K /mnt/usr/share/wallpapers/ 2>>"$LOG" || true
+        cat >/mnt/etc/skel/.config/plasma-org.kde.plasma.desktop-appletsrc <<'PLASMA'
+[Containments][1]
+ActivityId=
+formfactor=0
+immutability=1
+lastScreen=0
+location=0
+plugin=org.kde.plasma.folder
+wallpaperplugin=org.kde.image
+
+[Containments][1][Wallpaper][org.kde.image][General]
+Image=/usr/share/wallpapers/5K/
+PLASMA
+    fi
 
     # Copy skel assets to the already-created user home.
     arch-chroot /mnt /bin/bash -c "cp -rn /etc/skel/.config /etc/skel/.local /home/${USERNAME}/ 2>/dev/null; chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}" >>"$LOG" 2>&1 || true

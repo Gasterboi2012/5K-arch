@@ -1,0 +1,13 @@
+{
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "5K Linux"
+            }
+        ],
+        "Id": "5K",
+        "License": "CC-BY-SA-4.0",
+        "Name": "5K"
+    },
+    "X-Plasma-API": "5.0"
+}
