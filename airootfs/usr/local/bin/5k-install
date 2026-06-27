@@ -244,6 +244,11 @@ PKGS_KDE=(
 install_base() {
     run_step "Ranking mirrors" bash -c "reflector --latest 20 --sort rate --protocol https --save /etc/pacman.d/mirrorlist 2>/dev/null || true"
 
+    # Initialize the live pacman keyring so package signatures verify during
+    # pacstrap (the live ISO does not pre-populate it).
+    "${DLG[@]}" --title "Preparing" --infobox "\nInitializing the package signing keyring...\n\nThis can take a minute." 7 64
+    run_step "Initializing pacman keyring" bash -c "pacman-key --init && pacman-key --populate archlinux"
+
     local all=("${PKGS_BASE[@]}" "${PKGS_KDE[@]}")
     # microcode is only meaningful on bare metal; harmless otherwise.
     "${DLG[@]}" --title "Installing" --infobox "\nInstalling the 5K base system and KDE Plasma.\n\nThis can take a while depending on your connection..." 9 64
