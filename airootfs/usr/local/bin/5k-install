@@ -221,7 +221,7 @@ PKGS_BASE=(
     fastfetch git nano vim
     pipewire pipewire-pulse pipewire-alsa wireplumber
     xdg-user-dirs
-    ttf-jetbrains-mono-nerd-font noto-fonts noto-fonts-emoji
+    ttf-jetbrains-mono-nerd noto-fonts noto-fonts-emoji
     amd-ucode intel-ucode
 )
 
