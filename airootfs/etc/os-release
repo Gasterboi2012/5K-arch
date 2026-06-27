@@ -1,5 +1,5 @@
-NAME="5K Linux"
-PRETTY_NAME="5K Linux"
+NAME="5K"
+PRETTY_NAME="5K"
 ID=5k
 ID_LIKE=arch
 BUILD_ID=rolling
